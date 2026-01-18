@@ -1,7 +1,7 @@
 {
   "name": "ai-call-assistant",
   "version": "1.0.0",
-  "description": "Human-centered AI Call Assistant with Twilio and Email Summaries",
+  "description": "AI call assistant backend with Twilio and SendGrid email summaries",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,9 +10,9 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@sendgrid/mail": "^8.1.4",
     "body-parser": "^1.20.2",
     "express": "^4.19.2",
-    "nodemailer": "^6.9.8",
     "twilio": "^4.23.0"
   }
 }
