@@ -96,7 +96,7 @@ async function sendEmail(summary){
   if (!SENDGRID_API_KEY || !SUMMARY_TO_EMAIL) return;
   await sgMail.send({
     to: SUMMARY_TO_EMAIL,
-    from: "no-reply@ai-calls.yourdomain.com",
+    from: "ai.solutions.ottawa@gmail.com",
     subject: "New Call Summary",
     text: summary
   });
