@@ -3,38 +3,31 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const twilio = require("twilio");
-const sgMail = require("@sendgrid/mail");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 
-// ===== Variables (Railway) =====
-const SENDGRID_API_KEY = (process.env.SENDGRID_API_KEY || "").trim();
+// ===== Railway Variables (MUST exist) =====
+const EMAIL_WEBHOOK_URL = (process.env.EMAIL_WEBHOOK_URL || "").trim();
+const EMAIL_WEBHOOK_TOKEN = (process.env.EMAIL_WEBHOOK_TOKEN || "").trim();
 const SUMMARY_TO_EMAIL = (process.env.SUMMARY_TO_EMAIL || "").trim();
 
-// MUST be a Verified Sender in SendGrid Single Sender Verification
-const SENDGRID_FROM = (process.env.SENDGRID_FROM || "ai.solutions.ottawa@gmail.com").trim();
-
-if (SENDGRID_API_KEY) {
-  sgMail.setApiKey(SENDGRID_API_KEY);
-}
-
-// Voice settings
+// Voice settings (optional)
 const VOICE = process.env.TWILIO_TTS_VOICE || "alice";
 const LANG = process.env.TWILIO_TTS_LANG || "en-US";
 
 // ===== Timings (your requirements) =====
-const T_NAME = 3;
-const T_TYPE = 3;
-const T_TOPIC = 7;
-const T_URGENCY = 3;
-const T_CALLBACK = 7;
-const T_CALLBACK_TIME = 7;
+const T_NAME = 3;          // name: 3s
+const T_TYPE = 3;          // work/personal: 3s
+const T_TOPIC = 7;         // work topic: 7s
+const T_URGENCY = 3;       // urgent/can wait: 3s
+const T_CALLBACK = 7;      // hidden number callback: 7s
+const T_CALLBACK_TIME = 7; // when call back: 7s
 
 const ST_SHORT = 1;
 const ST_LONG = 2;
 
-// ===== In-memory state (MVP) =====
+// ===== In-memory state =====
 const callState = new Map();
 
 // ===== Helpers =====
@@ -57,13 +50,13 @@ function classifyWorkPersonal(typeRaw) {
   const t = (typeRaw || "").toLowerCase();
   if (t.includes("personal") || t.includes("private")) return "Personal";
   if (t.includes("work") || t.includes("business") || t.includes("job")) return "Work";
-  // if unclear, default to Work (safer)
+  // if unclear, default to Work
   return "Work";
 }
 
 // LOCKED RULES:
-// today / not right away / just today => CAN_WAIT
-// right now / urgent / asap / emergency => IMMEDIATE
+// - today / not right away / just today => CAN_WAIT
+// - right now / urgent / asap / emergency => IMMEDIATE
 function classifyUrgency(urgencyRaw) {
   const u = (urgencyRaw || "").toLowerCase();
   const immediate = [
@@ -91,7 +84,7 @@ function gather(sayText, actionPath, timeoutSec, speechTimeoutSec) {
     input: "speech",
     timeout: timeoutSec,
     speechTimeout: speechTimeoutSec,
-    action: actionPath, // RELATIVE path prevents loops
+    action: actionPath, // RELATIVE PATH (prevents loops)
     method: "POST",
     actionOnEmptyResult: true
   });
@@ -129,55 +122,74 @@ function buildSummary(s) {
 
   lines.push(`Type: ${s.type || "(unknown)"}`);
 
-  // Always include topic/urgency fields even if Personal (as optional)
   if (s.type === "Work") {
     lines.push(`Topic: ${s.topic || "(not provided)"}`);
     lines.push(`Urgency (caller words): "${s.urgencyRaw || "(not provided)"}"`);
     lines.push(`Urgency class: ${s.urgencyClass || "(unknown)"}`);
-
     if (s.urgencyClass === "CAN_WAIT") {
       lines.push(`Callback time (caller words): "${s.callbackTimeRaw || "(not provided)"}"`);
     }
-  } else if (s.type === "Personal") {
-    // Personal: no topic/urgency required, but we keep it clean
-    // (If you want, we can add "Reason (optional)" later)
   }
 
   lines.push(`Action: ${s.action || "(none)"}`);
   return lines.join("\n");
 }
 
-// ===== Non-killing email sender =====
-async function sendEmailSafe(summaryText, subjectText) {
+// ===== Email via Google Apps Script (never breaks the call) =====
+async function sendEmailViaGoogle(subject, bodyText) {
   try {
-    if (!SENDGRID_API_KEY || !SUMMARY_TO_EMAIL) return;
-
-    await sgMail.send({
-      to: SUMMARY_TO_EMAIL,
-      from: SENDGRID_FROM,
-      subject: subjectText,
-      text: summaryText
+    console.log("EMAIL_WEBHOOK_ATTEMPT", {
+      hasUrl: !!EMAIL_WEBHOOK_URL,
+      hasToken: !!EMAIL_WEBHOOK_TOKEN,
+      to: SUMMARY_TO_EMAIL || "(empty)"
     });
+
+    if (!EMAIL_WEBHOOK_URL || !EMAIL_WEBHOOK_TOKEN || !SUMMARY_TO_EMAIL) {
+      console.log("EMAIL_WEBHOOK_SKIP_MISSING_VARS");
+      return;
+    }
+
+    const resp = await fetch(EMAIL_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token: EMAIL_WEBHOOK_TOKEN,
+        to: SUMMARY_TO_EMAIL,
+        subject: subject,
+        body: bodyText
+      })
+    });
+
+    const text = await resp.text();
+    if (!resp.ok) {
+      console.log("EMAIL_WEBHOOK_FAIL_HTTP", resp.status, text);
+      return;
+    }
+
+    console.log("EMAIL_WEBHOOK_OK", text);
   } catch (e) {
-    // NEVER throw; never break call flow
-    const body = e && e.response && e.response.body ? e.response.body : null;
-    console.error("EMAIL_ERROR_FULL:", body ? JSON.stringify(body) : (e.message || e));
+    console.log("EMAIL_WEBHOOK_FAIL", e && e.message ? e.message : e);
   }
 }
 
-function finalizeAndNotify(state) {
-  const summary = buildSummary(state);
+function finalizeAndNotify(s) {
+  const summary = buildSummary(s);
 
   console.log("=== CALL SUMMARY ===\n" + summary + "\n====================");
 
-  // Fire-and-forget (safe)
-  sendEmailSafe(summary, `New Call Summary - ${state.type || "Unknown"}${state.name ? " - " + state.name : ""}`);
+  // fire-and-forget, safe
+  sendEmailViaGoogle(
+    `New Call Summary - ${s.type || "Unknown"}${s.name ? " - " + s.name : ""}`,
+    summary
+  );
 }
 
 // ===== ROUTES =====
 
-// STEP 0: Incoming -> Ask name (3s)
+// STEP 0: Incoming -> ask name (3s)
 app.post("/twilio/voice/incoming", (req, res) => {
+  console.log("INCOMING_HIT", req.body.CallSid, req.body.From);
+
   const callSid = req.body.CallSid;
   const from = req.body.From || "";
 
@@ -205,7 +217,7 @@ app.post("/twilio/voice/incoming", (req, res) => {
   res.type("text/xml").send(xml);
 });
 
-// STEP 1: Name -> if hidden ask callback (7s), else ask work/personal (3s)
+// STEP 1: Name -> hidden callback (7s) OR type (3s)
 app.post("/twilio/voice/step/name", (req, res) => {
   const callSid = req.body.CallSid;
   const speech = norm(req.body.SpeechResult);
@@ -234,7 +246,7 @@ app.post("/twilio/voice/step/name", (req, res) => {
   res.type("text/xml").send(xml);
 });
 
-// STEP 1b: Callback -> ask work/personal
+// STEP 1b: callback -> type
 app.post("/twilio/voice/step/callback", (req, res) => {
   const callSid = req.body.CallSid;
   const speech = norm(req.body.SpeechResult);
@@ -253,7 +265,7 @@ app.post("/twilio/voice/step/callback", (req, res) => {
   res.type("text/xml").send(xml);
 });
 
-// STEP 2: Type -> Personal finishes (email summary). Work -> topic
+// STEP 2: Type -> Personal ends (summary email). Work continues to topic.
 app.post("/twilio/voice/step/type", (req, res) => {
   const callSid = req.body.CallSid;
   const speech = norm(req.body.SpeechResult);
@@ -263,7 +275,6 @@ app.post("/twilio/voice/step/type", (req, res) => {
   callState.set(callSid, s);
 
   if (s.type === "Personal") {
-    // TEMPORARY MODE: personal also ends with summary email (no connect)
     s.action = "Summary sent (personal)";
     callState.set(callSid, s);
 
@@ -273,7 +284,6 @@ app.post("/twilio/voice/step/type", (req, res) => {
     return res.type("text/xml").send(xml);
   }
 
-  // Work topic (7s)
   const xml = gather(
     "Could you briefly share what it's regarding?",
     "/twilio/voice/step/topic",
@@ -284,7 +294,7 @@ app.post("/twilio/voice/step/type", (req, res) => {
   res.type("text/xml").send(xml);
 });
 
-// STEP 3: Topic -> urgency (3s)
+// STEP 3: topic -> urgency
 app.post("/twilio/voice/step/topic", (req, res) => {
   const callSid = req.body.CallSid;
   const speech = norm(req.body.SpeechResult);
@@ -303,7 +313,7 @@ app.post("/twilio/voice/step/topic", (req, res) => {
   res.type("text/xml").send(xml);
 });
 
-// STEP 4: Urgency -> if CAN_WAIT ask callback time (7s) else finish (email summary)
+// STEP 4: urgency -> if CAN_WAIT ask callback time (7s), else finish
 app.post("/twilio/voice/step/urgency", (req, res) => {
   const callSid = req.body.CallSid;
   const speech = norm(req.body.SpeechResult);
@@ -323,7 +333,6 @@ app.post("/twilio/voice/step/urgency", (req, res) => {
     return res.type("text/xml").send(xml);
   }
 
-  // IMMEDIATE: still no connect (temporary mode), just email summary
   s.action = "Summary sent (work - immediate)";
   callState.set(callSid, s);
 
@@ -333,7 +342,7 @@ app.post("/twilio/voice/step/urgency", (req, res) => {
   res.type("text/xml").send(xml);
 });
 
-// STEP 5: Callback time -> finish + email summary
+// STEP 5: callback time -> finish + email summary
 app.post("/twilio/voice/step/callback_time", (req, res) => {
   const callSid = req.body.CallSid;
   const speech = norm(req.body.SpeechResult);
