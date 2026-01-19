@@ -105,7 +105,7 @@ async function sendEmail(summary){
 function finalize(s){
   const summary = buildSummary(s);
   console.log("=== CALL SUMMARY ===\n"+summary+"\n====================");
-  sendEmail(summary).catch(e=>console.error("EMAIL_ERROR", e.message));
+  sendEmail(summary).catch(e=>console.error("EMAIL_ERROR", JSON.stringify(e, null, 2)));
 }
 
 // ===== ROUTES =====
