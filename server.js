@@ -365,4 +365,30 @@ app.get("/", (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+// ===== SMS -> Email via Google Apps Script =====
+app.post("/twilio/sms/incoming", (req, res) => {
+  try {
+    const from = (req.body.From || "(unknown)").toString();
+    const to = (req.body.To || "(unknown)").toString();
+    const body = (req.body.Body || "").toString();
+
+    const subject = New SMS to your Twilio number - from ${from};
+    const emailBody =
+      To (your Twilio number): ${to}\n +
+      From: ${from}\n +
+      Message:\n${body}\n;
+
+    console.log("=== SMS SUMMARY ===\n" + emailBody + "\n===================");
+
+    // Use the SAME email sender function you already have for calls:
+    // sendEmailViaGoogle(subject, bodyText)
+    sendEmailViaGoogle(subject, emailBody);
+
+    // Twilio expects a valid Messaging TwiML response
+    res.type("text/xml").send("<Response></Response>");
+  } catch (e) {
+    console.error("SMS_HANDLER_ERROR:", e && e.message ? e.message : e);
+    res.type("text/xml").send("<Response></Response>");
+  }
+});
 app.listen(PORT, () => console.log("Server running on port " + PORT));
